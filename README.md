@@ -593,4 +593,4 @@ $ python(3) C:\work\python\pycanalysis\pycanalysis.py --src <path>/mali_kbase_de
 
 output:
 
-
+![Output](../assets/mali_kbase_debug_job_fault.c_1.jpg?raw=true)
