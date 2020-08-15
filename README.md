@@ -3,7 +3,7 @@
 ## Usage
 
 ```shell script
-$ python(3) C:\work\python\pycanalysis\pycanalysis.py --help
+$ python(3) pycanalysis.py --help
 usage: pycanalysis.py [-h] [--src SRC] [--dst [DST]] [--processes [PROCESSES]]
 
 optional arguments:
@@ -14,7 +14,48 @@ optional arguments:
                         Core Use Count
 ```
 
-## Example
+## Example-1
+
+```c
+
+#include <stdio.h>
+#include "shit-c.h"
+
+void c() {
+    e();
+    f();
+}
+
+int a(char *b) {
+    c();
+#if DEBUG
+    d();
+#else if Warning
+    e();
+#else if XYZ
+    f();
+#else
+    e();
+#endif
+}
+
+int main() {
+    printf("fuck c");
+    a("xx");
+}
+```
+
+if the path to the code is `<path>/main.c`, you can use the following option:
+
+```shell script
+$ python(3) pycanalysis.py --src <path>/main.c --dst build -j 8
+```
+
+output:
+
+![Output](../assets/main.c_1.jpg?raw=true)
+
+## Example-2
 
 ```c
 /*
@@ -588,7 +629,7 @@ void kbase_debug_job_fault_dev_term(struct kbase_device *kbdev)
 if the path to the code is `<path>/mali_kbase_debug_job_fault.c`, you can use the following option:
 
 ```shell script
-$ python(3) C:\work\python\pycanalysis\pycanalysis.py --src <path>/mali_kbase_debug_job_fault.c --dst build -j 8
+$ python(3) pycanalysis.py --src <path>/mali_kbase_debug_job_fault.c --dst build -j 8
 ```
 
 output:
