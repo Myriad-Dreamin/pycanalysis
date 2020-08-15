@@ -1,10 +1,10 @@
-#!/usr/bin/python3
-
 import argparse
 import multiprocessing
+from multiprocessing.util import Finalize
 import os
 import sys
 import random
+
 from typing import Tuple, Union, List
 
 import threading
@@ -99,6 +99,20 @@ def get_signature_fn_name_r(source):
     return LookupError(f"could not skip the parameter list and get a function name {source}")
 
 
+def calc_cond(args):
+    for i, s in enumerate(args):
+        while True:
+            if s.startswith('!(!('):
+                s = s[4:-2]
+                continue
+            if s.startswith('!(!'):
+                s = s[3:-1]
+                continue
+            break
+        args[i] = s
+    return ' && '.join(args)
+
+
 # dict related helpers
 
 
@@ -117,6 +131,15 @@ def extend_prefix(prefix, strings):
 
 
 # console helpers
+
+
+def str2bool(str_boolean):
+    if str_boolean.lower() in ('yes', 'true', 't', 'y', '1'):
+        return True
+    elif str_boolean.lower() in ('no', 'false', 'f', 'n', '0'):
+        return False
+    else:
+        raise argparse.ArgumentTypeError('Unsupported value encountered.')
 
 
 def progressbar(i, total, filename='', size=30, file=sys.stdout):
@@ -224,14 +247,14 @@ class PreprocessorCommandParser(object):
         self.nodes, self.edges = None, None  # type: Union[set, None], Union[set, None]
         self.block_embedded = None  # type: Union[int, None]
         self.not_parsed_source, self.signature_fn_name = None, None  # type: Union[str, None], Union[str, None]
-        self.cond, self.cond_stack = None, None  # type: Union[str, None], Union[list, None]
+        self.cond, self.cond_stack = None, None  # type: Union[list, None], Union[list, None]
         self.macro_state, self.macro_state_stack = None, None  # type: Union[int, None], Union[list, None]
 
     def reset(self):
         self.nodes, self.edges = set(), set()
         self.block_embedded = 0
         self.not_parsed_source, self.signature_fn_name = '', ''
-        self.cond, self.cond_stack = '', []
+        self.cond, self.cond_stack = [], []
         self.macro_state, self.macro_state_stack = 0, []
 
     def build_callgraph(self, parts, offset_mapper=None):
@@ -251,24 +274,25 @@ class PreprocessorCommandParser(object):
         last_if = True
         if stripped_contend.startswith('#ifdef'):
             self.cond_stack.append(self.cond)
-            self.cond = stripped_contend[6:].strip()
+            self.cond = [stripped_contend[6:].strip()]
             self.macro_state_stack.append((self.block_embedded, self.macro_state))
             self.macro_state = PreprocessorCommandParser._state_macro_if
         elif stripped_contend.startswith('#if'):
             self.cond_stack.append(self.cond)
-            self.cond = stripped_contend[3:]
+            self.cond = [stripped_contend[3:].strip()]
             self.macro_state_stack.append((self.block_embedded, self.macro_state))
         else:
             eif = re.search(r'#el(?:se\s+)?if', stripped_contend)
             if eif:
-                self.cond = f'({self.cond}) && ({stripped_contend[len(eif[0]):]})'
+                self.cond = self.cond[:-1] + [
+                    f'!({self.cond[-1]})', stripped_contend[len(eif[0]):].strip()]
                 self.macro_state = PreprocessorCommandParser._state_macro_else
                 last_block_embedded = self.macro_state_stack[-1][0]
                 self.block_embedded = last_block_embedded
             last_if = eif
         if not last_if and stripped_contend.startswith('#else'):
             # if len(self.cond_stack) == 0: raise
-            self.cond = f'!({self.cond})'
+            self.cond = self.cond[:-1] + [f'!({self.cond[-1]})']
             self.macro_state = PreprocessorCommandParser._state_macro_else
             last_block_embedded = self.macro_state_stack[-1][0]
             self.block_embedded = last_block_embedded
@@ -318,7 +342,7 @@ class PreprocessorCommandParser(object):
                     continue
 
                 if validate_identifier(target):
-                    self.edges.add(CallEdge(u=self.signature_fn_name, v=target, condition=self.cond))
+                    self.edges.add(CallEdge(u=self.signature_fn_name, v=target, condition=calc_cond(self.cond)))
                     self.nodes.add(target)
 
 
@@ -405,12 +429,36 @@ def render_source(code, builder=None, renderer=None,
         render_args=render_args if target is None else add_target_directory_option(render_args, target))
 
 
+profile_factory = None  # type: Union[lambda: None, None]
+
+
+def render_source_with_profile(*args, **kwargs):
+    prof.enable()
+    res = render_source(*args, **kwargs)
+    prof.disable()
+    return res
+
+
 def render_file(filepath, *options):
     return render_source(open(filepath).read(), *options)
 
 
+def render_file_with_profile(filepath, *options):
+    return render_source_with_profile(open(filepath).read(), *options)
+
+
+def _initializer():
+    global prof
+    import cProfile
+    prof = cProfile.Profile()
+
+    def fin():
+        prof.dump_stats('profile-%s.out' % multiprocessing.current_process().pid)
+
+    Finalize(None, fin, exitpriority=1)
+
 def apply_render_call_graph(filepath, builder=CallGraphBuilder, renderer=GraphvizRender,
-                            dst='build', progress_bar=None, processes=None, **kwargs):
+                            dst='build', progress_bar=None, processes=None, profile=None, **kwargs):
     add_target_directory_option = getattr(renderer, 'add_target_directory_option', None) or kwargs.get(
         'add_target_directory_option', default_add_target_directory_option)
 
@@ -420,14 +468,22 @@ def apply_render_call_graph(filepath, builder=CallGraphBuilder, renderer=Graphvi
 
     options = (builder, renderer, builder_args, digraph_args, render_args, add_target_directory_option)
 
+    if profile:
+        rs = render_source_with_profile
+        rf = render_file_with_profile
+    else:
+        rs = render_source
+        rf = render_file
+
     source = kwargs.get('source')
     if source is not None:
-        render_source(source, *options)
+        render_args.update({'view': True, 'cleanup': True})
+        rs(source, *options)
         return
 
     if isinstance(filepath, str):
         if os.path.isfile(filepath):
-            render_source(open(filepath).read(), *options)
+            rs(open(filepath).read(), *options, target=os.path.join(dst, os.path.basename(filepath)))
             return
         elif os.path.isdir(filepath):
             source_list = []
@@ -444,7 +500,10 @@ def apply_render_call_graph(filepath, builder=CallGraphBuilder, renderer=Graphvi
         raise TypeError('want filepath type is str or list')
 
     if processes:
-        pool = multiprocessing.Pool(processes=processes)
+        initializer = None
+        if profile:
+            initializer = _initializer
+        pool = multiprocessing.Pool(processes=processes, initializer=initializer)
 
         def create_work(work_func, *args, **kwargs2):
             return pool.apply_async(work_func, args, kwds=kwargs2)
@@ -468,7 +527,7 @@ def apply_render_call_graph(filepath, builder=CallGraphBuilder, renderer=Graphvi
     sl = len(source_list)
     works = []
     for i, s in enumerate(map(lambda x: os.path.join(*x), source_list)):
-        works.append((i, s, create_work(render_file, s, *options, os.path.join(dst, s))))
+        works.append((i, s, create_work(rf, s, *options, os.path.join(dst, s))))
     for i, s, w in works:
         start_work(w)
         progress_bar and progress_bar(i, sl, s)
@@ -483,12 +542,23 @@ class Controller(object):
         self.arg_parser.add_argument('--dst', default=kwargs.get('dst', 'build'), nargs='?', help='Output Path')
         self.arg_parser.add_argument('--processes', '-j', default=kwargs.get('processes'),
                                      nargs='?', help='Core Use Count')
+        self.arg_parser.add_argument('--profile', type=str2bool, nargs='?', const=True, default=False,
+                                     help='Helps Profile')
 
     def work(self, src=None, **kwargs):
+
         args = self.arg_parser.parse_args()
+        isProfiling, pr = args.profile, None
+        if isProfiling:
+            import cProfile
+            pr = cProfile.Profile()
+            pr.enable()
         d_args = args.__dict__
         d_args.update(kwargs)
         apply_render_call_graph(src or args.src, **d_args)
+        if isProfiling:
+            pr.disable()
+            pr.dump_stats('profile.pstat')
         return self
 
 
@@ -500,9 +570,9 @@ if __name__ == '__main__':
 
 
     def safe_progressbar(*args, **kwargs):
-        mutex.acquire()
+        # mutex.acquire()
         progressbar(*args, **kwargs)
-        mutex.release()
+        # mutex.release()
 
 
     Controller(src='./drivers', dst='build', processes=multiprocessing.cpu_count()). \
