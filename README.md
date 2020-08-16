@@ -5,10 +5,10 @@
 ```shell script
 $ python(3) pycanalysis.py --help
 usage: pycanalysis.py [-h] [--processes [PROCESSES]] [--profile [PROFILE]]
-                      {draw} ...
+                      {draw,convert,view} ...
 
 positional arguments:
-  {draw}
+  {draw,convert,view}
 
 optional arguments:
   -h, --help            show this help message and exit
@@ -17,9 +17,50 @@ optional arguments:
   --profile [PROFILE]   Helps Profile
 ```
 
+## Convert a `digraph.gv` to json
+
+```shell script
+$ python(3) pycanalysis.py convert --help
+usage: pycanalysis.py convert [-h] [--format [FORMAT]] --src SRC
+
+optional arguments:
+  -h, --help            show this help message and exit
+  --format [FORMAT], -j [FORMAT]
+                        Format
+  --src SRC             Source Path
+```
+
+the output is temporarily directed to `$PWD/.parsed.json`
+
+## View the call graph with a specific function as source
+
+the input cache depends on `$PWD/.parsed.json` now.
+
+```shell script
+$ python(3) pycanalysis.py view --help
+usage: pycanalysis.py view [-h] [--max_depth MAX_DEPTH] viewing_function
+
+positional arguments:
+  viewing_function      source function
+
+optional arguments:
+  -h, --help            show this help message and exit
+  --max_depth MAX_DEPTH
+                        search depth
+```
+
+### View-Example-1
+
+```shell script
+$ python(3) pycanalysis.py view kbasep_hwcnt_backend_gpu_destroy --max_depth=2
+```
+
+![Output](../assets/view_example.jpg?raw=true)
+
 ## Draw call graph
 
 ```shell script
+$ python(3) pycanalysis.py draw --help
 usage: pycanalysis.py draw [-h] --src SRC [--dst [DST]] [--merge [MERGE]]
 
 optional arguments:

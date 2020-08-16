@@ -187,6 +187,16 @@ class ArgsHandler(object):
         self.arg_parser_handler = arg_parser_handler
         self.args = None
 
+    @staticmethod
+    def should_parse_args(f):
+        def wf(self, *a, **kwargs):
+            args = self.parse_args()
+            d_args = args.__dict__.copy()
+            d_args.update(kwargs)
+            return f(self, args, *a, **kwargs)
+
+        return wf
+
     def parse_args(self):
         if self.arg_parser_handler:
             return self.arg_parser_handler()
@@ -445,7 +455,7 @@ class GraphvizRender(object):
 
     @staticmethod
     def get_render_args(args: dict):
-        return select_args(extend_prefix('render_', ['view', 'directory', 'cleanup']), src=args)
+        return select_args(extend_prefix('render_', ['view', 'filename', 'directory', 'cleanup']), src=args)
 
     @staticmethod
     def add_target_directory_option(args: dict, target):
@@ -636,18 +646,12 @@ class DrawController(ArgsHandler):
             self.render_structured_info(VM, EM, **kwargs)
         return self
 
-    def apply_render_call_graph(self, src=None, **kwargs):
-        args = self.parse_args()
-        d_args = args.__dict__.copy()
-        d_args.update(kwargs)
-        'func' in d_args and d_args.pop('func')
-        return apply_render_call_graph(src or args.src, **d_args)
+    @ArgsHandler.should_parse_args
+    def apply_render_call_graph(self, args, src=None, **kwargs):
+        return apply_render_call_graph(src or args.src, **kwargs)
 
-    def render_structured_info(self, vertices, edges, renderer=GraphvizRender, target=None, **kwargs):
-        args = self.parse_args()
-        d_args = args.__dict__
-        d_args.update(kwargs)
-
+    @ArgsHandler.should_parse_args
+    def render_structured_info(self, args, vertices, edges, renderer=GraphvizRender, target=None, **kwargs):
         add_target_directory_option = getattr(renderer, 'add_target_directory_option', None) or kwargs.get(
             'add_target_directory_option', default_add_target_directory_option)
 
@@ -657,9 +661,221 @@ class DrawController(ArgsHandler):
                                       target=target or os.path.join(args.dst, 'full_graph.gv'))
 
 
-class Controller(ArgsHandler):
+class ViewController(ArgsHandler):
+    cmd_name = 'view'
 
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+
+        ap = self.arg_parser
+
+        ap.add_argument('viewing_function', help='source function')
+        ap.add_argument('--max_depth', type=int, default=2, help='search depth')
+
+        ap.set_defaults(func=self)
+
+    @ArgsHandler.should_parse_args
+    def __call__(self, args, renderer=GraphvizRender(), progress_bar=None, **kwargs):
+        vertices = {args.viewing_function}
+        edges = set()
+
+        import json
+        with open('.parsed.json') as f:
+            d = json.load(f)
+        edges_next = dict()
+        edges_last = dict()
+        for edge in d['edges']:
+            ol = edges_next.get(edge['front'], list())
+            ol.append(edge)
+            edges_next[edge['front']] = ol
+            ol = edges_last.get(edge['tail'], list())
+            ol.append(edge)
+            edges_last[edge['tail']] = ol
+
+        max_depth = args.max_depth - 1
+
+        def sort_add(edges_set, direction, swap):
+            queue = collections.deque()
+            queue.append((args.viewing_function, 0))
+            progress_a, progress_b = 0, 1
+            added = {args.viewing_function}
+            while len(queue):
+                progress_bar and progress_bar(progress_a, progress_b)
+                progress_a += 1
+                f, depth = queue.pop()
+                fs = edges_set.get(f)
+                if not fs:
+                    continue
+                for e in fs:
+                    tail = e[direction]
+                    vertices.add(tail)
+                    u, v = swap(f, tail)
+                    edges.add(CallEdge(u=u, v=v, condition=e.get('label')))
+                    if tail not in added and depth < max_depth:
+                        added.add(tail)
+                        queue.append((tail, depth + 1))
+                        progress_b += 1
+            progress_bar and progress_bar(progress_b, progress_b)
+
+        sort_add(edges_next, 'tail', lambda u, v: (u, v))
+        print()
+        sort_add(edges_last, 'front', lambda u, v: (v, u))
+        print()
+        print('found', len(vertices), 'vertices', len(edges), 'edges')
+        import tempfile, uuid
+        kwargs['filename'] = 'view-digraph-' + str(uuid.uuid4())[-12:] + '.gv'
+        kwargs['directory'] = tempfile.gettempdir()
+        kwargs['view'] = True
+        kwargs['cleanup'] = True
+
+        digraph_args = getattr(renderer, 'get_digraph_args', id_func)(kwargs)
+        render_args = getattr(renderer, 'get_render_args', id_func)(kwargs)
+        return render_structured_info(vertices, edges, renderer, digraph_args, render_args)
+
+
+_ParenthesesNothing = 0
+_ParenthesesParen = 1
+_ParenthesesBrace = 2
+_ParenthesesBracket = 3
+
+
+class ParenthesesParser(object):
+
+    def __init__(self, source):
+        self.i = 0
+        self.source = source
+        self.parsed = []
+
+    def add_not_parsed(self, li):
+        stripped = self.source[li:self.i].strip()
+        if len(stripped):
+            self.parsed.extend(map(lambda x: (_ParenthesesNothing, x.strip()), stripped.split('\n')))
+
+    def parse_parentheses(self, li, mark, lp, rp):
+        if self.source[self.i] == lp:
+            self.add_not_parsed(li)
+            self.i += 1
+            p = self.parsed
+            self.parsed = []
+            self.work(rp)
+            if self.source[self.i] != rp:
+                raise ValueError('not wanted')
+            p.append((mark, self.parsed))
+            self.parsed = p
+            return self.i + 1
+        return None
+
+    def work(self, want_matched=None):
+        last_index = self.i
+        while self.i < len(self.source):
+            if self.source[self.i] == want_matched:
+                self.add_not_parsed(last_index)
+                return
+            last_index = \
+                self.parse_parentheses(last_index, _ParenthesesBrace, '{', '}') or \
+                self.parse_parentheses(last_index, _ParenthesesBracket, '[', ']') or \
+                self.parse_parentheses(last_index, _ParenthesesParen, '(', ')') or \
+                last_index
+            self.i += 1
+        self.add_not_parsed(last_index)
+
+
+def parse_parentheses(source):
+    p = ParenthesesParser(source)
+    p.work()
+    return p.parsed
+
+
+def m_range(x):
+    for _r in range(x):
+        yield _r
+
+
+class Digraph(object):
+    regex = re.compile(r'\s*([a-zA-Z0-9]*)="([^"]*)"')
+
+    def __init__(self, parsed):
+        self.nodes, self.edges = list(), list()
+
+        r = m_range(len(parsed))
+        for i in r:
+            t, c = parsed[i]
+            if t == _ParenthesesNothing:
+                if c == '""':
+                    continue
+                elif c == "digraph":
+                    raise NotImplementedError("not recursive now")
+                else:
+                    if '->' in c:
+                        a, b = c.split('->')
+                        edge = {'front': a.strip(), 'tail': b.strip()}
+                        if parsed[i + 1][0] == _ParenthesesBracket:
+                            next(r)
+                            options = parsed[i + 1][1][0][1]
+                            for matched in Digraph.regex.findall(options):
+                                edge[matched[0]] = matched[1]
+                        self.edges.append(edge)
+                    else:
+                        print('node', c)
+                        if parsed[i + 1][0] == _ParenthesesBracket:
+                            next(r)
+                            raise NotImplementedError("...")
+                        self.nodes.append(c)
+
+
+class ConvertController(ArgsHandler):
+    cmd_name = 'convert'
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+
+        ap = self.arg_parser
+
+        ap.add_argument('--format', '-j', default=kwargs.get('convert_format', 'json'),
+                        nargs='?', help='Format')
+        ap.add_argument('--src', required=True, help='Source Path')
+
+        # subparsers = ap.add_subparsers()
+        #
+        # self.draw_controller = Controller.Draw(
+        #     arg_parser=subparsers.add_parser(Controller.Draw.cmd_name), arg_parser_handler=self.parse_args, **kwargs)
+
+        ap.set_defaults(func=self)
+
+    def __call__(self, *args, **kwargs):
+        return self.convert_digraph(*args, **kwargs)
+
+    @ArgsHandler.should_parse_args
+    def convert_digraph(self, args, **kwargs):
+        s = open(args.src).read()
+        parsed = parse_parentheses(s)
+        r = m_range(len(parsed))
+        structured = []
+        for i in r:
+            t, c = parsed[i]
+            if t == _ParenthesesNothing:
+                if c == "digraph":
+                    i = next(r)
+                    t, c = parsed[i]
+                    if t != _ParenthesesBrace:
+                        raise ValueError("not matched {")
+                    structured.append(Digraph(c))
+
+        if len(structured) != 1:
+            raise IndexError("not 1")
+        g = structured[0]
+        if type(g) != Digraph:
+            raise TypeError("want parsed is digraph")
+        d = {'nodes': g.nodes, 'edges': g.edges}
+        import json
+        with open('.parsed.json', 'w') as f:
+            json.dump(d, f)
+
+
+class Controller(ArgsHandler):
     Draw = DrawController
+    Convert = ConvertController
+    View = ViewController
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -674,6 +890,10 @@ class Controller(ArgsHandler):
 
         self.draw_controller = Controller.Draw(
             arg_parser=subparsers.add_parser(Controller.Draw.cmd_name), arg_parser_handler=self.parse_args, **kwargs)
+        self.convert_controller = Controller.Convert(
+            arg_parser=subparsers.add_parser(Controller.Convert.cmd_name), arg_parser_handler=self.parse_args, **kwargs)
+        self.view_controller = Controller.View(
+            arg_parser=subparsers.add_parser(Controller.View.cmd_name), arg_parser_handler=self.parse_args, **kwargs)
 
     def __call__(self, *a, **kwargs):
         args = self.parse_args()
