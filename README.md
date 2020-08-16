@@ -4,17 +4,32 @@
 
 ```shell script
 $ python(3) pycanalysis.py --help
-usage: pycanalysis.py [-h] [--src SRC] [--dst [DST]] [--processes [PROCESSES]]
+usage: pycanalysis.py [-h] [--processes [PROCESSES]] [--profile [PROFILE]]
+                      {draw} ...
+
+positional arguments:
+  {draw}
 
 optional arguments:
   -h, --help            show this help message and exit
-  --src SRC             Source Path
-  --dst [DST]           Output Path
   --processes [PROCESSES], -j [PROCESSES]
                         Core Use Count
+  --profile [PROFILE]   Helps Profile
 ```
 
-## Example-1
+## Draw call graph
+
+```shell script
+usage: pycanalysis.py draw [-h] --src SRC [--dst [DST]] [--merge [MERGE]]
+
+optional arguments:
+  -h, --help       show this help message and exit
+  --src SRC        Source Path
+  --dst [DST]      Output Path
+  --merge [MERGE]  Helps FullView
+```
+
+### Draw-Example-1
 
 ```c
 
@@ -45,17 +60,17 @@ int main() {
 }
 ```
 
-if the path to the code is `<path>/main.c`, you can use the following option:
+if the path to the code is `<path>/main.c`, you can use the following options:
 
 ```shell script
-$ python(3) pycanalysis.py --src <path>/main.c --dst build -j 8
+$ python(3) pycanalysis.py draw --src <path>/main.c --dst build -j 8
 ```
 
 output:
 
 ![Output](../assets/main.c_1.jpg?raw=true)
 
-## Example-2
+### Draw-Example-2
 
 ```c
 /*
@@ -626,10 +641,10 @@ void kbase_debug_job_fault_dev_term(struct kbase_device *kbdev)
 #endif /* CONFIG_DEBUG_FS */
 ```
 
-if the path to the code is `<path>/mali_kbase_debug_job_fault.c`, you can use the following option:
+if the path to the code is `<path>/mali_kbase_debug_job_fault.c`, you can use the following options:
 
 ```shell script
-$ python(3) pycanalysis.py --src <path>/mali_kbase_debug_job_fault.c --dst build -j 8
+$ python(3) pycanalysis.py draw --src <path>/mali_kbase_debug_job_fault.c --dst build -j 8
 ```
 
 output:
